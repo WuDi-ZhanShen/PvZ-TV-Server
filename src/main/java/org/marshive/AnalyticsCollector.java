@@ -199,8 +199,8 @@ final class AnalyticsCollector {
     }
 
     private static String inferSide(int seedType) {
-        if (seedType >= 61) return "ZOMBIE";
-        if (seedType >= 0) return "PLANT";
+        if (SeedTypeNames.isZombieSeed(seedType)) return "ZOMBIE";
+        if (SeedTypeNames.isPlantSeed(seedType)) return "PLANT";
         return null;
     }
 

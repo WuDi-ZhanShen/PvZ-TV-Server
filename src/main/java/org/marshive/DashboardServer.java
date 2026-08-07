@@ -38,6 +38,19 @@ final class DashboardServer {
         server.setExecutor(null);
         server.start();
         System.out.println("[DASHBOARD] http://0.0.0.0:" + port + "/");
+
+        // Historical side repair / deck rebuild can be expensive on a large database.
+        // Never block the dashboard HTTP port from coming online while it runs.
+        Thread metricsInitThread = new Thread(() -> {
+            System.out.println("[METRICS_DB] background initialization started");
+            if (!MetricsStore.initialize()) {
+                System.out.println("[METRICS_DB] background initialization failed; historical side repair was not applied");
+            } else {
+                System.out.println("[METRICS_DB] background initialization finished");
+            }
+        }, "pvz-metrics-init");
+        metricsInitThread.setDaemon(true);
+        metricsInitThread.start();
     }
 
     private static final class IndexHandler implements HttpHandler {
@@ -92,10 +105,11 @@ final class DashboardServer {
                 writeText(exchange, 405, "{\"error\":\"method_not_allowed\"}", "application/json; charset=utf-8");
                 return;
             }
+            exchange.getResponseHeaders().set("Cache-Control", "no-store, no-cache, must-revalidate");
             StringBuilder sb = new StringBuilder();
             sb.append("{\"items\":[");
             boolean first = true;
-            for (int seed = 0; seed <= 120; seed++) {
+            for (int seed : SeedTypeNames.knownSeedTypes()) {
                 String en = SeedTypeNames.nameOf(seed);
                 if ("UnknownSeed".equals(en)) continue;
                 if (!first) sb.append(',');
@@ -217,12 +231,12 @@ final class DashboardServer {
     }
 
     private static CoreNames coreNameFromUsage(Connection conn, String side, String deckIds, String extraPacket, String balancePatch, String banMode, String modeFilter) {
-        int minSeed = "ZOMBIE".equals(side) ? 61 : 0;
-        int maxSeed = "ZOMBIE".equals(side) ? 120 : 60;
+        boolean zombie = "ZOMBIE".equals(side);
         List<Integer> deckSeedIds = parseDeckIds(deckIds);
         List<Integer> candidates = new ArrayList<>();
         for (int id : deckSeedIds) {
-            if (id < minSeed || id > maxSeed) continue;
+            if (zombie && !SeedTypeNames.isZombieSeed(id)) continue;
+            if (!zombie && !SeedTypeNames.isPlantSeed(id)) continue;
             if (id == SUNFLOWER_SEED || id == GRAVESTONE_SEED) continue;
             candidates.add(id);
         }
@@ -236,7 +250,7 @@ final class DashboardServer {
                         "), agg AS (" +
                         "  SELECT u.seed_type, SUM(u.use_count) AS total_use " +
                         "  FROM match_card_usage u JOIN decks d ON d.match_id=u.match_id AND d.side=u.side " +
-                        "  WHERE d.side=? AND d.deck_ids=? AND u.side=? AND u.use_count>0 AND u.seed_type BETWEEN ? AND ? AND u.seed_type NOT IN (?,?) " +
+                        "  WHERE d.side=? AND d.deck_ids=? AND u.side=? AND u.use_count>0 AND u.seed_type NOT IN (?,?) " +
                         "  GROUP BY u.seed_type" +
                         ")" +
                         "SELECT seed_type FROM agg ORDER BY total_use DESC, seed_type ASC LIMIT 2";
@@ -251,10 +265,8 @@ final class DashboardServer {
             ps.setString(7, side);
             ps.setString(8, deckIds);
             ps.setString(9, side);
-            ps.setInt(10, minSeed);
-            ps.setInt(11, maxSeed);
-            ps.setInt(12, SUNFLOWER_SEED);
-            ps.setInt(13, GRAVESTONE_SEED);
+            ps.setInt(10, SUNFLOWER_SEED);
+            ps.setInt(11, GRAVESTONE_SEED);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     int seed = rs.getInt("seed_type");
@@ -286,10 +298,16 @@ final class DashboardServer {
     private static String queryCardStatsJson(String side, String extraPacket, String balancePatch, String banMode, String modeFilter) {
         final String sql =
                 "WITH scoped AS (" +
-                        "  SELECT e.match_id, e.seed_type, e.side, e.event_type, r.winner " +
+                        "  SELECT e.match_id, e.seed_type, " +
+                        "         CASE WHEN e.seed_type >= " + SeedTypeNames.ZOMBIE_SEED_START +
+                        "                   AND e.seed_type < " + SeedTypeNames.CUSTOM_PLANT_SEED_START +
+                        "              THEN 'ZOMBIE' ELSE 'PLANT' END AS side, " +
+                        "         e.event_type, r.winner " +
                         "  FROM match_card_events e JOIN match_results r ON r.id=e.match_id " +
-                        "  WHERE e.side=? " +
-                        "    AND ((?='ZOMBIE' AND e.seed_type>=61) OR (?='PLANT' AND e.seed_type<61)) " +
+                        "  WHERE ((?='ZOMBIE' AND e.seed_type >= " + SeedTypeNames.ZOMBIE_SEED_START +
+                        "                         AND e.seed_type < " + SeedTypeNames.CUSTOM_PLANT_SEED_START + ") " +
+                        "      OR (?='PLANT' AND (e.seed_type < " + SeedTypeNames.ZOMBIE_SEED_START +
+                        "                         OR e.seed_type >= " + SeedTypeNames.CUSTOM_PLANT_SEED_START + "))) " +
                         "    AND r.extra_packet=? " +
                         "    AND r.balance_patch=? " +
                         "    AND r.ban_mode=? " +
@@ -325,11 +343,10 @@ final class DashboardServer {
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, side);
             ps.setString(2, side);
-            ps.setString(3, side);
-            ps.setString(4, extraPacket);
-            ps.setString(5, balancePatch);
-            ps.setString(6, banMode);
-            ps.setString(7, modeFilter);
+            ps.setString(3, extraPacket);
+            ps.setString(4, balancePatch);
+            ps.setString(5, banMode);
+            ps.setString(6, modeFilter);
 
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -384,8 +401,8 @@ final class DashboardServer {
         List<Integer> nonProducer = new ArrayList<>();
         boolean zombie = "ZOMBIE".equals(side);
         for (int id : ids) {
-            if (zombie && id < 61) continue;
-            if (!zombie && id >= 61) continue;
+            if (zombie && !SeedTypeNames.isZombieSeed(id)) continue;
+            if (!zombie && !SeedTypeNames.isPlantSeed(id)) continue;
             if (id == SUNFLOWER_SEED || id == GRAVESTONE_SEED) continue;
             nonProducer.add(id);
         }
@@ -475,7 +492,7 @@ final class DashboardServer {
                 "function fmtTime(s){if(!s)return '-';const iso=s.includes('T')?s:(s.replace(' ','T')+'Z');const d=new Date(iso);if(Number.isNaN(d.getTime()))return s;return d.toLocaleString(lang==='zh'?'zh-CN':'en-US',{hour12:false});}" +
                 "function labels(){const t=i18n[lang];document.getElementById('topTitle').textContent=t.title;document.getElementById('deckTitle').textContent=sideText(side)+t.sideSuffix+' '+t.deckTitle;document.getElementById('cardTitle').textContent=t.cardTitle;document.getElementById('recentTitle').textContent=t.recentTitle;document.getElementById('recentThTime').textContent=t.time;document.getElementById('recentThPlant').textContent=t.plant;document.getElementById('recentThZombie').textContent=t.zombie;document.getElementById('recentThWinner').textContent=t.winner;document.getElementById('recentThDuration').textContent=t.duration;document.getElementById('subTitle').textContent=t.sub;document.getElementById('thCard').textContent=t.card;document.getElementById('thPick').textContent=t.pick;document.getElementById('thBan').textContent=t.ban;document.getElementById('thWin').textContent=t.win;document.getElementById('thWr').textContent=t.wr;document.getElementById('thPr').textContent=t.pr;document.getElementById('thBr').textContent=t.br;const e=document.getElementById('extraSel');e.options[0].text=t.extraOff;e.options[1].text=t.extraOn;const b=document.getElementById('bpSel');b.options[0].text=t.bpOn;b.options[1].text=t.bpOff;const m=document.getElementById('modeSel');m.options[0].text=t.modeDay;m.options[1].text=t.modeNight;m.options[2].text=t.modePool;m.options[3].text=t.modeFog;m.options[4].text=t.modeRoof;document.getElementById('sidePlant').textContent=t.plant;document.getElementById('sideZombie').textContent=t.zombie;document.getElementById('langBtn').textContent=(lang==='zh'?'中文 / EN':'EN / 中文');document.getElementById('themeBtn').textContent=(theme==='dark'?t.themeDark:t.themeLight);applyBanColumns();}" +
                 "function applyBanColumns(){const on=(banMode==='true');['thBan','thBr'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=on?'':'none';});}" +
-                "async function loadNames(){const r=await fetch('/api/seed-names');const j=await r.json();names={};(j.items||[]).forEach(it=>names[it.seed_type]={en:it.en,zh:it.zh});}" +
+                "async function loadNames(){const r=await fetch('/api/seed-names',{cache:'no-store'});const j=await r.json();names={};(j.items||[]).forEach(it=>names[it.seed_type]={en:it.en,zh:it.zh});}" +
                 "function color(i,a){const c=[[33,150,243],[0,200,83],[255,171,64],[255,82,82],[171,71,188],[0,229,255],[124,255,178],[41,182,246],[92,107,192],[255,138,101],[255,112,67],[64,196,255],[105,240,174],[255,214,0],[176,190,197]];const v=c[i%c.length];return 'rgba('+v[0]+','+v[1]+','+v[2]+','+a+')'}" +
                 "function drawPie(){const cv=document.getElementById('pie');const ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);const pieTotal=decks.reduce((s,d)=>s+d.plays,0);const total=totalPlays>0?totalPlays:pieTotal;if(decksLoading){ctx.fillStyle='#6c7a90';ctx.font='16px Microsoft YaHei';ctx.fillText(i18n[lang].loading,150,210);return;}if(pieTotal<=0){ctx.fillStyle='#6c7a90';ctx.font='16px Microsoft YaHei';ctx.fillText(i18n[lang].noData,158,210);return;}let start=-Math.PI/2;const cx=210,cy=210,r=170;" +
                 "decks.forEach((d,i)=>{const ang=(d.plays/pieTotal)*Math.PI*2;const active=(hoverDeck===''||hoverDeck===d.deck_ids);ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+ang);ctx.closePath();ctx.fillStyle=color(i,active?0.9:0.22);ctx.fill();start+=ang;});" +
@@ -483,6 +500,8 @@ final class DashboardServer {
                 "function renderDecks(){const box=document.getElementById('deckList');box.innerHTML='';if(decksLoading){box.innerHTML='<div class=\"deck-item\">'+i18n[lang].loading+'</div>';return;}if(!decks.length){box.innerHTML='<div class=\"deck-item\">'+i18n[lang].noData+'</div>';return;}decks.forEach((d,idx)=>{const div=document.createElement('div');div.className='deck-item'+(hoverDeck===d.deck_ids?' active':'');const ids=(d.deck_ids||'').split('|').filter(Boolean).map(x=>parseInt(x,10));const deckText=ids.map(id=>cardName(id,'','')).join(' | ');const core=lang==='zh'?(d.core_zh||'未知核心'):(d.core_en||'UnknownCore');div.innerHTML='<div class=\"deck-core\">#'+(idx+1)+' '+core+'</div><div class=\"deck-meta\">'+i18n[lang].plays+': '+d.plays+' | '+i18n[lang].rate+': '+pct(d.win_rate)+'</div><div class=\"deck-cards\">'+deckText+'</div>';div.addEventListener('mouseenter',()=>{hoverDeck=d.deck_ids;renderDecks();drawPie();});div.addEventListener('mouseleave',()=>{hoverDeck='';renderDecks();drawPie();});box.appendChild(div);});}" +
                 "function qs(){return 'side='+encodeURIComponent(side)+'&extra_packet='+encodeURIComponent(extraPacket)+'&balance_patch='+encodeURIComponent(balancePatch)+'&ban_mode='+encodeURIComponent(banMode)+'&mode='+encodeURIComponent(mode)}" +
                 "async function loadDecks(v){let nextDecks=[];let nextTotal=0;try{const r=await fetch('/api/top-decks?'+qs(),{cache:'no-store'});const j=await r.json();nextDecks=j.items||[];nextTotal=(j.total_plays||0);}catch(_){}if(v!==reqVer)return;decks=nextDecks;totalPlays=nextTotal;decksLoading=false;if(hoverDeck && !decks.some(d=>d.deck_ids===hoverDeck))hoverDeck='';renderDecks();drawPie();}" +
+                "function renderCardsLoading(){const tb=document.querySelector('#cards tbody');if(!tb)return;const cols=(banMode==='true'?7:5);tb.innerHTML='<tr><td colspan=\"'+cols+'\">'+i18n[lang].loading+'</td></tr>';}" +
+                "function waitForPaint(){return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));}" +
                 "async function loadCards(v){let items=[];try{const r=await fetch('/api/card-stats?'+qs(),{cache:'no-store'});const j=await r.json();items=j.items||[];}catch(_){}if(v!==reqVer)return;const tb=document.querySelector('#cards tbody');tb.innerHTML='';const on=(banMode==='true');items.forEach(it=>{const tr=document.createElement('tr');tr.innerHTML=on?('<td>'+cardName(it.seed_type,it.seed_en,it.seed_zh)+'</td><td>'+it.picked+'</td><td>'+it.banned+'</td><td>'+it.won+'</td><td>'+pct(it.win_rate)+'</td><td>'+pct(it.pick_rate)+'</td><td>'+pct(it.ban_rate)+'</td>'):('<td>'+cardName(it.seed_type,it.seed_en,it.seed_zh)+'</td><td>'+it.picked+'</td><td>'+it.won+'</td><td>'+pct(it.win_rate)+'</td><td>'+pct(it.pick_rate)+'</td>');tb.appendChild(tr);});}" +
                 "async function loadRecent(v){let items=[];try{const r=await fetch('/api/recent-matches',{cache:'no-store'});const j=await r.json();items=j.items||[];}catch(_){}if(v!==reqVer)return;const tb=document.querySelector('#recent tbody');tb.innerHTML='';(items||[]).forEach(it=>{const tr=document.createElement('tr');const p=it.plant_name&&it.plant_name.length?it.plant_name:'-';const z=it.zombie_name&&it.zombie_name.length?it.zombie_name:'-';tr.innerHTML='<td>'+fmtTime(it.finished_at)+'</td><td>'+p+'</td><td>'+z+'</td><td>'+winnerText(it.winner)+'</td><td>'+it.duration+'</td>';tb.appendChild(tr);});}" +
                 "async function tick(){const v=++reqVer;await Promise.allSettled([loadDecks(v),loadCards(v),loadRecent(v)]);}" +
@@ -491,7 +510,7 @@ final class DashboardServer {
                 "document.getElementById('langBtn').addEventListener('click',async()=>{lang=(lang==='zh'?'en':'zh');localStorage.setItem('pvz_lang',lang);labels();const bn=document.getElementById('banSel');if(bn){bn.options[0].text=(lang==='zh'?'禁选模式: 关':'Ban Mode: Off');bn.options[1].text=(lang==='zh'?'禁选模式: 开':'Ban Mode: On');}renderSideBtns();renderDecks();drawPie();await tick();});" +
                 "function applyTheme(){document.body.classList.toggle('dark',theme==='dark');const t=i18n[lang];document.getElementById('themeBtn').textContent=(theme==='dark'?t.themeDark:t.themeLight);}" +
                 "document.getElementById('themeBtn').addEventListener('click',()=>{theme=(theme==='dark'?'light':'dark');localStorage.setItem('pvz_theme',theme);applyTheme();drawPie();});" +
-                "async function switchSide(next){side=next;localStorage.setItem('pvz_side',side);hoverDeck='';decks=[];totalPlays=0;decksLoading=true;renderSideBtns();labels();renderDecks();drawPie();await tick();}" +
+                "async function switchSide(next){side=next;localStorage.setItem('pvz_side',side);hoverDeck='';decks=[];totalPlays=0;decksLoading=true;renderSideBtns();labels();renderDecks();drawPie();renderCardsLoading();await waitForPaint();await tick();}" +
                 "const sidePlantBtn=document.getElementById('sidePlant');const sideZombieBtn=document.getElementById('sideZombie');" +
                 "sidePlantBtn.addEventListener('click',async()=>{await switchSide('PLANT');});" +
                 "sideZombieBtn.addEventListener('click',async()=>{await switchSide('ZOMBIE');});" +

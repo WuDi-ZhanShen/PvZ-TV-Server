@@ -78,9 +78,11 @@ public class ServerApp {
             System.out.println("[FATAL] Probe port range overflow: " + probeBasePort + " ~ " + lastProbePort);
             return;
         }
-        int metricsPort = basePort + 3000;
-        if (metricsPort <= 0 || metricsPort > 65535) {
-            System.out.println("[FATAL] Metrics port overflow: " + metricsPort);
+        int metricsBasePort = basePort + 3000;
+        int lastMetricsPort = metricsBasePort + shardCount - 1;
+        if (metricsBasePort <= 0 || lastMetricsPort > 65535) {
+            System.out.println("[FATAL] Metrics port range overflow: "
+                    + metricsBasePort + " ~ " + lastMetricsPort);
             return;
         }
         int dashboardPort = basePort + 4000;
@@ -97,7 +99,7 @@ public class ServerApp {
 
         System.out.println(">>> NIO Game Server Started on Ports: " +
                 basePort + " ~ " + lastPort +
-                " (base=" + basePort + ", shards=" + shardCount + ", probeBase1=" + probeBasePort + ", probeBase2=" + probeBasePort2 + ", metricsPort=" + metricsPort + ", dashboardPort=" + dashboardPort + ")");
+                " (base=" + basePort + ", shards=" + shardCount + ", probeBase1=" + probeBasePort + ", probeBase2=" + probeBasePort2 + ", metricsPorts=" + metricsBasePort + "~" + lastMetricsPort + ", dashboardPort=" + dashboardPort + ")");
 
         Selector selector = Selector.open();
         RoomManager[] rms = new RoomManager[shardCount];
@@ -119,7 +121,10 @@ public class ServerApp {
             startProbeThread(probePort2, 2);
         }
         SettlementReplicator.configure(replicateHost, replicatePort, replicateBatch);
-        startMetricsThread(metricsPort);
+        for (int i = 0; i < shardCount; i++) {
+            int metricsPort = metricsBasePort + i;
+            startMetricsThread(metricsPort);
+        }
         if (dashboardEnabled) {
             DashboardServer.start(dashboardPort);
         } else {

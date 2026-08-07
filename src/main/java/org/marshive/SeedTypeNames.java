@@ -11,6 +11,9 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 final class SeedTypeNames {
+    static final int ZOMBIE_SEED_START = 61;
+    static final int CUSTOM_PLANT_SEED_START = 200;
+
     private static final Map<Integer, String> KEYS = new HashMap<>();
     private static final Map<String, String> ZH = new HashMap<>();
 
@@ -109,10 +112,18 @@ final class SeedTypeNames {
         put(93, "SUPER_FAN_IMP");
         put(94, "JACKSON_ZOMBIE");
         put(95, "GIGA_POLE_VAULTING_ZOMBIE");
-        put(96, "WALLNUT_HEAD_ZOMBIE");
-        put(97, "BOSS");
-        put(98, "REDEYED_GARGANTUAR");
-        put(100, "ZOMBIE_BEGHOULED_SHUFFLE");
+        put(96, "SUNDAY_EDITION_ZOMBIE");
+        put(97, "EXPLORER_ZOMBIE");
+        put(98, "ZOMBLOB");
+        put(99, "GIGA_GARGANTUAR");
+        put(100, "DOGWALKER_ZOMBIE");
+        put(200, "ICEBERG_LETTUCE");
+        put(201, "BLOOMERANG");
+        put(201, "BONK_CHOY");
+        put(203, "CELERY_STALKER");
+        put(204, "SPORE_SHROOM");
+        put(205, "SWEET_POTATO");
+        put(206, "CHILLY_PEPPER");
 
         loadLocalizedStrings("LawnStrings.txt");
         loadLocalizedStrings("AddonStrings.txt");
@@ -135,6 +146,19 @@ final class SeedTypeNames {
         String key = nameOf(seedType);
         String zh = ZH.get(key);
         return (zh == null || zh.trim().isEmpty()) ? key : zh.trim();
+    }
+
+    static boolean isPlantSeed(int seedType) {
+        return seedType >= 0
+                && (seedType < ZOMBIE_SEED_START || seedType >= CUSTOM_PLANT_SEED_START);
+    }
+
+    static boolean isZombieSeed(int seedType) {
+        return seedType >= ZOMBIE_SEED_START && seedType < CUSTOM_PLANT_SEED_START;
+    }
+
+    static Set<Integer> knownSeedTypes() {
+        return new java.util.TreeSet<>(KEYS.keySet());
     }
 
     private static void put(int id, String key) {

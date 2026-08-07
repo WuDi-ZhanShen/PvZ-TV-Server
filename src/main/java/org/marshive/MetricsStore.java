@@ -28,6 +28,12 @@ final class MetricsStore {
         FAILED
     }
 
+    static boolean initialize() {
+        synchronized (MetricsStore.class) {
+            return ensureInit();
+        }
+    }
+
     static RecordResult recordMatch(String settleId, int roomId, boolean plantWin, int mainCounter, Set<Integer> plantCards, Set<Integer> zombieCards, List<AnalyticsCollector.MatchEvent> events, AnalyticsCollector.SettlementMeta meta) {
         synchronized (MetricsStore.class) {
             if (!ensureInit()) return RecordResult.FAILED;
@@ -271,16 +277,19 @@ final class MetricsStore {
     private static void repairSideBySeedType(Connection c) throws SQLException {
         int fixedEvents = 0;
         int fixedUsage = 0;
+        String sideCase = "CASE WHEN seed_type >= " + SeedTypeNames.ZOMBIE_SEED_START
+                + " AND seed_type < " + SeedTypeNames.CUSTOM_PLANT_SEED_START
+                + " THEN 'ZOMBIE' ELSE 'PLANT' END";
         try (PreparedStatement ps = c.prepareStatement(
                 "UPDATE match_card_events " +
-                        "SET side = CASE WHEN seed_type >= 61 THEN 'ZOMBIE' ELSE 'PLANT' END " +
-                        "WHERE side <> CASE WHEN seed_type >= 61 THEN 'ZOMBIE' ELSE 'PLANT' END")) {
+                        "SET side = " + sideCase + " " +
+                        "WHERE side <> " + sideCase)) {
             fixedEvents = ps.executeUpdate();
         }
         try (PreparedStatement ps = c.prepareStatement(
                 "UPDATE match_card_usage " +
-                        "SET side = CASE WHEN seed_type >= 61 THEN 'ZOMBIE' ELSE 'PLANT' END " +
-                        "WHERE side <> CASE WHEN seed_type >= 61 THEN 'ZOMBIE' ELSE 'PLANT' END")) {
+                        "SET side = " + sideCase + " " +
+                        "WHERE side <> " + sideCase)) {
             fixedUsage = ps.executeUpdate();
         }
         if (fixedEvents > 0 || fixedUsage > 0) {
@@ -315,7 +324,7 @@ final class MetricsStore {
                 if (rs.wasNull()) {
                     continue;
                 }
-                String side = seedType >= 61 ? "ZOMBIE" : "PLANT";
+                String side = SeedTypeNames.isZombieSeed(seedType) ? "ZOMBIE" : "PLANT";
                 int seq = rs.getInt("seq");
                 events.add(new AnalyticsCollector.MatchEvent(seq, side, "PICK", seedType));
             }
