@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
 
 final class DashboardServer {
     private static final String DB_URL = "jdbc:sqlite:data/pvz_metrics.db";
@@ -35,7 +36,11 @@ final class DashboardServer {
         server.createContext("/api/recent-matches", new RecentMatchesHandler());
         server.createContext("/api/seed-names", new SeedNamesHandler());
         server.createContext("/api/stream", new StreamHandler());
-        server.setExecutor(null);
+        server.setExecutor(
+                Executors.newFixedThreadPool(
+                        Math.max(4, Runtime.getRuntime().availableProcessors())
+                )
+        );
         server.start();
         System.out.println("[DASHBOARD] http://0.0.0.0:" + port + "/");
 

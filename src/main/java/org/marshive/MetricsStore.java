@@ -202,8 +202,12 @@ final class MetricsStore {
                 return false;
             }
             conn = DriverManager.getConnection(DB_URL);
+            try (Statement st = conn.createStatement()) {
+                st.execute("PRAGMA journal_mode=WAL");
+                st.execute("PRAGMA synchronous=NORMAL");
+                st.execute("PRAGMA busy_timeout=5000");
+            }
             createSchema(conn);
-            repairSideBySeedType(conn);
             initialized = true;
             return true;
         } catch (SQLException e) {
@@ -271,6 +275,25 @@ final class MetricsStore {
                     "PRIMARY KEY(match_id, side)," +
                     "FOREIGN KEY(match_id) REFERENCES match_results(id)" +
                     ")");
+            st.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_events_match_side_type_seed " +
+                            "ON match_card_events(match_id, side, event_type, seed_type)"
+            );
+
+            st.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_usage_match_side_seed " +
+                            "ON match_card_usage(match_id, side, seed_type)"
+            );
+
+            st.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_decks_side_deck_match " +
+                            "ON match_decks(side, deck_ids, match_id)"
+            );
+
+            st.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_results_dashboard " +
+                            "ON match_results(extra_packet, balance_patch, ban_mode, bg, game_mode, id)"
+            );
         }
     }
 

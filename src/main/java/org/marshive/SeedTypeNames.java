@@ -117,6 +117,7 @@ final class SeedTypeNames {
         put(98, "ZOMBLOB");
         put(99, "GIGA_GARGANTUAR");
         put(100, "DOGWALKER_ZOMBIE");
+        put(101, "TELEPORTATION_ZOMBIE");
         put(200, "ICEBERG_LETTUCE");
         put(201, "BLOOMERANG");
         put(201, "BONK_CHOY");
@@ -124,6 +125,8 @@ final class SeedTypeNames {
         put(204, "SPORE_SHROOM");
         put(205, "SWEET_POTATO");
         put(206, "CHILLY_PEPPER");
+        put(207, "SUN_BEAN");
+        put(208, "PEANUT");
 
         loadLocalizedStrings("LawnStrings.txt");
         loadLocalizedStrings("AddonStrings.txt");
